@@ -1,13 +1,14 @@
 import os
 import logging
-import google.generativeai as genai
+from groq import Groq
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = "llama-3.1-8b-instant"
 
 SYSTEM_PROMPT = """You are an expert AI tutor and doubt solver. Your role is to help students understand concepts clearly.
 
@@ -21,22 +22,17 @@ Guidelines:
 - Keep answers concise yet comprehensive
 """
 
-
 def get_llm_response(
     question: str,
     context_chunks: list[dict],
     chat_history: list[dict] = None,
     subject: str = "General",
 ) -> str:
-    if not GEMINI_API_KEY:
+    if not GROQ_API_KEY:
         return _fallback_response(question, context_chunks)
 
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-            system_instruction=SYSTEM_PROMPT,
-        )
+        client = Groq(api_key=GROQ_API_KEY)
 
         # Build context string from retrieved chunks
         context_text = ""
@@ -46,13 +42,6 @@ def get_llm_response(
                 source = chunk.get("source", "Unknown")
                 text = chunk.get("text", "")
                 context_text += f"\n[Source {i} - {source}]:\n{text}\n"
-
-        # Build history for multi-turn
-        history = []
-        if chat_history:
-            for msg in chat_history[-6:]:  # Last 3 exchanges
-                role = "user" if msg["role"] == "user" else "model"
-                history.append({"role": role, "parts": [msg["content"]]})
 
         if context_chunks:
             instruction = "Please provide a clear, educational answer based strictly on the study material above."
@@ -66,14 +55,31 @@ Student Question: {question}
 
 {instruction}"""
 
-        chat = model.start_chat(history=history)
-        response = chat.send_message(prompt)
-        return response.text
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT}
+        ]
+
+        # Build history for multi-turn
+        if chat_history:
+            for msg in chat_history[-6:]:  # Last 3 exchanges
+                # OpenAI/Groq use "user" and "assistant"
+                role = "user" if msg["role"] == "user" else "assistant"
+                messages.append({"role": role, "content": msg["content"]})
+
+        messages.append({"role": "user", "content": prompt})
+
+        chat_completion = client.chat.completions.create(
+            messages=messages,
+            model=GROQ_MODEL,
+            temperature=0.7,
+            max_tokens=1024
+        )
+        
+        return chat_completion.choices[0].message.content
 
     except Exception as e:
-        logger.error(f"Gemini API error: {e}")
+        logger.error(f"Groq API error: {e}")
         return _fallback_response(question, context_chunks)
-
 
 def _fallback_response(question: str, context_chunks: list[dict]) -> str:
     """Fallback when no API key is configured"""
@@ -85,11 +91,11 @@ I found relevant content in your study materials:
 
 > {context_preview}...
 
-**Note:** Configure your GEMINI_API_KEY in the `.env` file for full AI-powered answers.
+**Note:** Configure your GROQ_API_KEY in the `.env` file for full AI-powered answers.
 
-To get a free API key: https://aistudio.google.com/app/apikey"""
+To get a free API key: https://console.groq.com/keys"""
     return """## Setup Required
 
-Please add your **GEMINI_API_KEY** to `ai-service/.env` to enable AI responses.
+Please add your **GROQ_API_KEY** to `ai-service/.env` to enable AI responses.
 
-Get a free key at: https://aistudio.google.com/app/apikey"""
+Get a free key at: https://console.groq.com/keys"""
